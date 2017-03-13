@@ -1,6 +1,9 @@
 import ast
+import importlib
 import sys
 import textwrap
+
+import pytest
 
 from flow import FlowGraph
 
@@ -81,6 +84,23 @@ def test_if_elif_else_conditional():
     graph.to_graphviz().render('{}.gv'.format(test_func_name()))
 
 
+def test_early_returns():
+    ast_root = ast_from_text("""
+    def f():
+        if 1:
+            print(1)
+            return 1
+
+        print(2)
+        return 2
+
+        print(3)  # dead code
+    """)
+    graph = FlowGraph.from_ast(ast_root.body[0])
+    assert graph.statement_count == 6
+    graph.to_graphviz().render('{}.gv'.format(test_func_name()))
+
+
 def test_self_graph():
     import flow.graph
     with open(flow.graph.__file__) as fd:
@@ -88,3 +108,15 @@ def test_self_graph():
     ast_root = ast_from_text(module, flow.graph.__name__)
     graph = FlowGraph.from_ast(ast_root)
     graph.to_graphviz().render('{}.gv'.format(test_func_name()))
+
+
+@pytest.mark.parametrize('param', ['heapq.merge', 'collections.namedtuple',
+                                   'keyword.main', 'inspect.getmembers'])
+def test_stdlib_func(param):
+    import inspect
+    module_name, _, func_name = param.rpartition('.')
+    module = importlib.import_module(module_name)
+    function, _ = inspect.getsourcelines(getattr(module, func_name))
+    ast_root = ast_from_text('\n'.join(function), module_name)
+    graph = FlowGraph.from_ast(ast_root.body[0])
+    graph.to_graphviz().render('{}_{}.gv'.format(test_func_name(), param))

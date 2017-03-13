@@ -99,3 +99,4 @@ ENV/
 # Graphviz output
 *.gv
 *.pdf
+*.png

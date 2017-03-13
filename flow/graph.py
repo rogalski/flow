@@ -3,6 +3,7 @@ import collections
 import functools
 
 import graphviz
+import astunparse
 
 
 class Node:
@@ -38,12 +39,12 @@ class MergeNode(NonStatementNode):
 
 
 @functools.singledispatch
-def flow_graph_from_ast(ast_node, expand=False):
+def flow_graph_from_ast(ast_node, expand=False, func_returns=[], loop_breaks=[]):
     raise NotImplementedError
 
 
 @flow_graph_from_ast.register(ast.stmt)
-def _(ast_node, expand=False):
+def _(ast_node, expand=False, func_returns=[], loop_breaks=[]):
     graph = FlowGraph()
     statement = graph.add_statement_node(ast_node)
     graph.add_edge(graph.start_node, statement)
@@ -52,35 +53,88 @@ def _(ast_node, expand=False):
 
 
 @flow_graph_from_ast.register(list)
-def _(ast_list, expand=False):
+def _(ast_list, expand=False, func_returns=[], loop_breaks=[]):
     graph = FlowGraph()
     graph.add_edge(graph.start_node, graph.end_node)
     for ast_node in ast_list:
-        graph.insert(flow_graph_from_ast(ast_node), graph.end_node)
+        graph.insert(flow_graph_from_ast(ast_node, expand, func_returns, loop_breaks), graph.end_node)
     return graph
 
 
 @flow_graph_from_ast.register(ast.Module)
+def _(ast_root, expand=False, func_returns=[], loop_breaks=[]):
+    return flow_graph_from_ast(ast_root.body)
+
+
 @flow_graph_from_ast.register(ast.FunctionDef)
 @flow_graph_from_ast.register(ast.AsyncFunctionDef)
-def _(ast_root, expand=False):
+def _(ast_root, expand=False, func_returns=[], loop_breaks=[]):
     if expand:
-        return flow_graph_from_ast(ast_root.body)
+        func_returns.append(set())
+        graph = flow_graph_from_ast(ast_root.body, expand, func_returns, loop_breaks)
+        returns = func_returns.pop()
+        for return_ in returns:
+            graph.add_edge(return_, graph.end_node)
+
+        return graph
     else:
-        return flow_graph_from_ast.registry[ast.stmt](ast_root)
+        return flow_graph_from_ast.registry[ast.stmt](ast_root, expand, func_returns, loop_breaks)
+
+
+@flow_graph_from_ast.register(ast.While)
+@flow_graph_from_ast.register(ast.For)
+def _(ast_loop, expand=False, func_returns=[], loop_breaks=[]):
+    loop_breaks.append(set())
+    graph = FlowGraph()
+    decision_loop = graph.add_decision_node(ast_loop)
+    merge_loop = graph.add_merge_node()
+    graph.add_edge(graph.start_node, decision_loop)
+    graph.add_edge(decision_loop, graph.end_node)
+    graph.add_edge(merge_loop, graph.end_node)
+    graph.embed(flow_graph_from_ast(ast_loop.body, expand, func_returns, loop_breaks),
+                start_node=decision_loop, end_node=decision_loop)
+    modifiers = loop_breaks.pop()
+    for mod in modifiers:
+        if isinstance(mod.statement, ast.Continue):
+            graph.add_edge(mod, decision_loop)
+        else:  # break
+            graph.add_edge(mod, merge_loop)
+
+    return graph
+
+
+@flow_graph_from_ast.register(ast.Break)
+@flow_graph_from_ast.register(ast.Continue)
+def _(ast_break_continue, expand=False, func_returns=[], loop_breaks=[]):
+    graph = flow_graph_from_ast.registry[ast.stmt](ast_break_continue)
+    assert len(graph.user_nodes) == 1
+    break_continue_node = next(iter(graph.user_nodes))
+    graph.edges[break_continue_node].clear()
+    loop_breaks[-1].add(break_continue_node)
+    return graph
+
+
+@flow_graph_from_ast.register(ast.Return)
+def _(ast_return, expand=False, func_returns=[], loop_breaks=[]):
+    graph = flow_graph_from_ast.registry[ast.stmt](ast_return)
+    assert len(graph.user_nodes) == 1
+    return_node = next(iter(graph.user_nodes))
+    graph.edges[return_node].clear()
+    func_returns[-1].add(return_node)
+    return graph
 
 
 @flow_graph_from_ast.register(ast.If)
-def _(ast_if, expand=False):
+def _(ast_if, expand=False, func_returns=[], loop_breaks=[]):
     graph = FlowGraph()
     decision_if = graph.add_decision_node(ast_if)
     merge_if = graph.add_merge_node()
     graph.add_edge(graph.start_node, decision_if)
     graph.add_edge(merge_if, graph.end_node)
-    graph.embed(flow_graph_from_ast(ast_if.body),
+    graph.embed(flow_graph_from_ast(ast_if.body, expand, func_returns, loop_breaks),
                 start_node=decision_if, end_node=merge_if)
     if ast_if.orelse:
-        graph.embed(flow_graph_from_ast(ast_if.orelse),
+        graph.embed(flow_graph_from_ast(ast_if.orelse, expand, func_returns, loop_breaks),
                     start_node=decision_if, end_node=merge_if)
     else:
         graph.add_edge(decision_if, merge_if)
@@ -172,8 +226,14 @@ class FlowGraph:
                 continue
             from_nodes = [checked_node for checked_node in self.edges
                           if node in self.edges[checked_node]]
-            if len(from_nodes) != 1:
+            if len(from_nodes) > 1:
                 continue
+            elif not from_nodes:
+                # this is more like W/A than solution
+                # something about break/continue/return is not cleaner properly
+                del self.edges[node]
+                self.user_nodes.remove(node)
+                return self.reduce_merge_nodes()  # recursion here is quite ugly
 
             from_node = next(iter(from_nodes))
             to_node = next(iter(to_nodes))
@@ -197,7 +257,9 @@ class FlowGraph:
         def add_edge(dot, from_node, to_node, **kwargs):
             return dot.edge(str(id(from_node)), str(id(to_node)), **kwargs)
 
-        dot = graphviz.Digraph()
+        font_attr = {'fontname': 'Courier', 'fontsize': '9'}
+        dot = graphviz.Digraph(format='png', graph_attr=font_attr,
+                               node_attr=font_attr, edge_attr=font_attr)
         add_node(dot, self.start_node, shape='circle', label='')
         add_node(dot, self.end_node, shape='doublecircle', label='')
         for node in self.user_nodes:
@@ -222,5 +284,13 @@ class FlowGraph:
         if node.statement is None:
             return ''
         elif isinstance(node, DecisionNode):
-            return str(node.statement.test)
-        return str(node.statement)
+            if isinstance(node.statement, ast.If):
+                return 'if {}'.format(astunparse.unparse(node.statement.test))
+            elif isinstance(node.statement, ast.While):
+                return 'while {}'.format(astunparse.unparse(node.statement.test))
+            elif isinstance(node.statement, ast.For):
+                return 'for {} in {}'.format(astunparse.unparse(node.statement.target),
+                                             astunparse.unparse(node.statement.iter))
+            else:
+                return '?'
+        return astunparse.unparse(node.statement)
