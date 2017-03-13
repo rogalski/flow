@@ -39,6 +39,11 @@ class MergeNode(NonStatementNode):
 
 @functools.singledispatch
 def flow_graph_from_ast(ast_node, expand=False):
+    raise NotImplementedError
+
+
+@flow_graph_from_ast.register(ast.stmt)
+def _(ast_node, expand=False):
     graph = FlowGraph()
     statement = graph.add_statement_node(ast_node)
     graph.add_edge(graph.start_node, statement)
@@ -62,11 +67,7 @@ def _(ast_root, expand=False):
     if expand:
         return flow_graph_from_ast(ast_root.body)
     else:
-        graph = FlowGraph()
-        statement = graph.add_statement_node(ast_root)
-        graph.add_edge(graph.start_node, statement)
-        graph.add_edge(statement, graph.end_node)
-        return graph
+        return flow_graph_from_ast.registry[ast.stmt](ast_root)
 
 
 @flow_graph_from_ast.register(ast.If)

@@ -87,4 +87,4 @@ def test_self_graph():
         module = fd.read()
     ast_root = ast_from_text(module, flow.graph.__name__)
     graph = FlowGraph.from_ast(ast_root)
-    graph.to_graphviz().render(sys._getframe().f_code.co_name + '.gv')
+    graph.to_graphviz().render('{}.gv'.format(test_func_name()))
