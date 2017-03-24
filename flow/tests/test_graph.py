@@ -98,6 +98,19 @@ def test_early_returns():
     """)
     graph = FlowGraph.from_ast(ast_root.body[0])
     assert graph.statement_count == 6
+    assert not graph.returns_implicitly
+    graph.to_graphviz().render('{}.gv'.format(test_func_name()))
+
+
+def test_returns_implicitly():
+    ast_root = ast_from_text("""
+    def f():
+        if 1:
+            return 1
+    """)
+    graph = FlowGraph.from_ast(ast_root.body[0])
+    assert graph.statement_count == 2
+    assert not graph.returns_implicitly
     graph.to_graphviz().render('{}.gv'.format(test_func_name()))
 
 

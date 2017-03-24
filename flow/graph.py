@@ -38,6 +38,10 @@ class MergeNode(NonStatementNode):
     pass
 
 
+class ImplicitReturnStmt(ast.stmt):
+    pass
+
+
 @functools.singledispatch
 def flow_graph_from_ast(ast_node, expand=False, func_returns=[], loop_breaks=[]):
     raise NotImplementedError
@@ -71,7 +75,7 @@ def _(ast_root, expand=False, func_returns=[], loop_breaks=[]):
 def _(ast_root, expand=False, func_returns=[], loop_breaks=[]):
     if expand:
         func_returns.append(set())
-        graph = flow_graph_from_ast(ast_root.body, expand, func_returns, loop_breaks)
+        graph = flow_graph_from_ast(ast_root.body + [ImplicitReturnStmt()], expand, func_returns, loop_breaks)
         returns = func_returns.pop()
         for return_ in returns:
             graph.add_edge(return_, graph.end_node)
@@ -147,11 +151,20 @@ class FlowGraph:
         self.start_node = StartNode()
         self.end_node = StopNode()
         self.user_nodes = set()
+        self.implicit_nodes = set()
         self.edges = collections.defaultdict(set)
 
     @property
     def statement_count(self):
-        return sum(1 for n in self.user_nodes if n.statement is not None)
+        return sum(1 for n in self.user_nodes if n.statement is not None and not isinstance(n.statement, ImplicitReturnStmt))
+
+    @property
+    def returns_implicitly(self):
+        implicit_return_node = next((node for node in self.implicit_nodes if
+                                    isinstance(node.statement, ImplicitReturnStmt)), None)
+        if implicit_return_node is None:
+            return False
+        return any(implicit_return_node in self.edges[from_node] for from_node in self.edges)
 
     @classmethod
     def from_ast(cls, ast_root):
@@ -283,6 +296,8 @@ class FlowGraph:
     def get_graphviz_label(node):
         if node.statement is None:
             return ''
+        elif isinstance(node.statement, ImplicitReturnStmt):
+            return '[return None]'
         elif isinstance(node, DecisionNode):
             if isinstance(node.statement, ast.If):
                 return 'if {}'.format(astunparse.unparse(node.statement.test))
